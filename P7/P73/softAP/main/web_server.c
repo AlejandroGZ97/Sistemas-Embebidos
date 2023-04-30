@@ -10,66 +10,95 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-
-#define EXAMPLE_ESP_WIFI_SSID      "softAP_SE"
+#define EXAMPLE_ESP_WIFI_SSID      "P7AKS"
 #define EXAMPLE_ESP_WIFI_PASS      "SE_12345678"
 #define EXAMPLE_MAX_STA_CONN       10
 
+/*
+To read html docs is necessary to add this modifications
+in the following files:
+
+*** CMakeList.txt ***
+idf_component_register(SRCS "main.c"
+                    INCLUDE_DIRS "."
+                    EMBED_TXTFILES "commands.html")
+
+*** component.mk ***
+COMPONENT_EMBED_TXTFILES := index.html
+*/
+
 static const char *TAG = "softAP_WebServer";
+char cad[30] = " ";
 
 /* An HTTP GET handler */
 static esp_err_t hello_get_handler(httpd_req_t *req)
 {
-    /* Send a simple response */
-    const char* resp = (const char*) req->user_ctx;
-    httpd_resp_send(req, resp, HTTPD_RESP_USE_STRLEN);
-    return ESP_OK;
-}
+    char*  buf;
+    size_t buf_len;
 
-/* An HTTP POST handler */
-static esp_err_t echo_post_handler(httpd_req_t *req)
-{
-    char buf[100];
-    int ret, remaining = req->content_len;
-
-    while (remaining > 0) {
-        /* Read the data for the request */
-        if ((ret = httpd_req_recv(req, buf,
-                        MIN(remaining, sizeof(buf)))) <= 0) {
-            if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
-                /* Retry receiving if timeout occurred */
-                continue;
-            }
-            return ESP_FAIL;
+    /* Get header value string length and allocate memory for length + 1,
+     * extra byte for null termination */
+    buf_len = httpd_req_get_hdr_value_len(req, "Host") + 1;
+    if (buf_len > 1) {
+        buf = malloc(buf_len);
+        /* Copy null terminated value string into buffer */
+        if (httpd_req_get_hdr_value_str(req, "Host", buf, buf_len) == ESP_OK) {
+            ESP_LOGI(TAG, "Found header => Host: %s", buf);
         }
-
-        /* Send back the same data */
-        httpd_resp_send_chunk(req, buf, ret);
-        remaining -= ret;
-
-        /* Log data received */
-        ESP_LOGI(TAG, "=========== RECEIVED DATA ==========");
-        ESP_LOGI(TAG, "%.*s", ret, buf);
-        ESP_LOGI(TAG, "====================================");
+        free(buf);
     }
 
-    // End response
-    httpd_resp_send_chunk(req, NULL, 0);
+    /* Read URL query string length and allocate memory for length + 1,
+     * extra byte for null termination */
+    buf_len = httpd_req_get_url_query_len(req) + 1;
+    if (buf_len > 1) {
+        buf = malloc(buf_len);
+        if (httpd_req_get_url_query_str(req, buf, buf_len) == ESP_OK) {
+            ESP_LOGI(TAG, "Found URL query => %s", buf);
+            char command[5];
+            /* Get value of expected key from query string */
+            if (httpd_query_key_value(buf, "command", command, sizeof(command)) == ESP_OK) {
+                if (strcmp(command,"0x10") == 0)
+                {
+                    strcpy(cad,"hola");
+                }
+                else
+                    strcpy(cad," ");
+            }
+        }
+        free(buf);
+    }
+    
+    extern unsigned char file_start[] asm("_binary_commands_html_start");
+    extern unsigned char file_end[] asm("_binary_commands_html_end");
+    size_t file_len = file_end - file_start;
+    char commandsHtml[file_len];
+
+    memcpy(commandsHtml, file_start, file_len);
+
+    char* htmlUpdatedCommand;
+    int htmlFormatted = asprintf(&htmlUpdatedCommand, commandsHtml, cad);
+
+    httpd_resp_set_type(req, "text/html");
+
+    if (htmlFormatted > 0)
+    {
+        httpd_resp_send(req, htmlUpdatedCommand, file_len);
+        free(htmlUpdatedCommand);
+    }
+    else
+    {
+        ESP_LOGE(TAG, "Error updating variables");
+        httpd_resp_send(req, htmlUpdatedCommand, file_len);
+    }
+
     return ESP_OK;
 }
-
-static const httpd_uri_t echo = {
-    .uri       = "/echo",
-    .method    = HTTP_POST,
-    .handler   = echo_post_handler,
-    .user_ctx  = NULL
-};
 
 static const httpd_uri_t hello = {
     .uri       = "/hello",
     .method    = HTTP_GET,
-    .handler   = hello_get_handler,
-    .user_ctx  = "Hola Mundo!!"
+    .handler   = hello_get_handler
 };
 
 static httpd_handle_t start_webserver(void)
@@ -83,7 +112,7 @@ static httpd_handle_t start_webserver(void)
         // Manejadores de URI
         ESP_LOGI(TAG, "Registrando manejadores de URI");
         httpd_register_uri_handler(server, &hello);
-        httpd_register_uri_handler(server, &uri_post);
+        //httpd_register_uri_handler(server, &uri_post);
         return server;
     }
 

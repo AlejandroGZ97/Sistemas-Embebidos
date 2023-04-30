@@ -1,2 +1,3 @@
 idf_component_register(SRCS "web_server.c"
-                    INCLUDE_DIRS ".")
+                    INCLUDE_DIRS "."
+                    EMBED_TXTFILES "commands.html")
