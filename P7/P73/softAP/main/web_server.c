@@ -1,14 +1,4 @@
-#include <esp_wifi.h>
-#include <esp_event.h>
-#include <esp_log.h>
-#include <esp_system.h>
-#include <esp_http_server.h>
-#include <nvs_flash.h>
-#include <sys/param.h>
-#include <string.h>
-#include "esp_eth.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
+#include "comandos.c"
 
 #define EXAMPLE_ESP_WIFI_SSID      "P7AKS"
 #define EXAMPLE_ESP_WIFI_PASS      "SE_12345678"
@@ -28,10 +18,10 @@ COMPONENT_EMBED_TXTFILES := index.html
 */
 
 static const char *TAG = "softAP_WebServer";
-char cad[30] = " ";
+uint32_t start;
 
 /* An HTTP GET handler */
-static esp_err_t hello_get_handler(httpd_req_t *req)
+static esp_err_t commands_get_handler(httpd_req_t *req)
 {
     char*  buf;
     size_t buf_len;
@@ -59,11 +49,15 @@ static esp_err_t hello_get_handler(httpd_req_t *req)
             /* Get value of expected key from query string */
             if (httpd_query_key_value(buf, "command", command, sizeof(command)) == ESP_OK) {
                 if (strcmp(command,"0x10") == 0)
-                {
-                    strcpy(cad,"hola");
-                }
+                    timeStamp(start);
+                else if (strcmp(command,"0x11") == 0)
+                    showTemperature();
+                else if (strcmp(command,"0x12") == 0)
+                    invertLedState();
+                else if (strcmp(command,"0x13") == 0)
+                    showLedState();
                 else
-                    strcpy(cad," ");
+                    strcpy(cad,"Introduce un comando");
             }
         }
         free(buf);
@@ -95,10 +89,10 @@ static esp_err_t hello_get_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
-static const httpd_uri_t hello = {
-    .uri       = "/hello",
+static const httpd_uri_t p7Commands = {
+    .uri       = "/p7",
     .method    = HTTP_GET,
-    .handler   = hello_get_handler
+    .handler   = commands_get_handler
 };
 
 static httpd_handle_t start_webserver(void)
@@ -111,7 +105,7 @@ static httpd_handle_t start_webserver(void)
     if (httpd_start(&server, &config) == ESP_OK) {
         // Manejadores de URI
         ESP_LOGI(TAG, "Registrando manejadores de URI");
-        httpd_register_uri_handler(server, &hello);
+        httpd_register_uri_handler(server, &p7Commands);
         //httpd_register_uri_handler(server, &uri_post);
         return server;
     }
@@ -168,6 +162,11 @@ esp_err_t wifi_init_softap(void)
 void app_main(void)
 {
     httpd_handle_t server = NULL;
+
+    start=xTaskGetTickCount();
+
+    gpio_reset_pin(2);
+    gpio_set_direction(2,GPIO_MODE_OUTPUT);
 
     ESP_ERROR_CHECK(nvs_flash_init());
     esp_netif_init();
