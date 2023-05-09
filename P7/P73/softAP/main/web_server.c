@@ -51,11 +51,11 @@ static esp_err_t commands_get_handler(httpd_req_t *req)
                 if (strcmp(command,"0x10") == 0)
                     timeStamp(start);
                 else if (strcmp(command,"0x11") == 0)
-                    showTemperature();
-                else if (strcmp(command,"0x12") == 0)
-                    invertLedState();
-                else if (strcmp(command,"0x13") == 0)
                     showLedState();
+                else if (strcmp(command,"0x12") == 0)
+                    showTemperature();
+                else if (strcmp(command,"0x13") == 0)
+                    invertLedState();
                 else
                     strcpy(cad,"Introduce un comando");
             }
