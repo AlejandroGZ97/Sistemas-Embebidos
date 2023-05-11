@@ -24,12 +24,26 @@
 #include "time.h"
 #include "sys/time.h"
 
+#include "driver/uart.h"
+
 #define SPP_TAG "SPP_ACCEPTOR_DEMO"
 #define SPP_SERVER_NAME "SPP_SERVER"
 #define EXAMPLE_DEVICE_NAME "ESP_SPP_ACCEPTOR"
 #define SPP_SHOW_DATA 0
 #define SPP_SHOW_SPEED 1
 #define SPP_SHOW_MODE SPP_SHOW_DATA    /*Choose show mode: show data or speed*/
+
+// UART 0
+#define PC_UART_PORT    (0)
+#define PC_UART_RX_PIN  (3)
+#define PC_UART_TX_PIN  (1)
+#define UARTS_BAUD_RATE         (115200)
+#define STACK_SIZE 1024*2
+#define TASK_STACK_SIZE         (1048)
+#define READ_BUF_SIZE           (1024)
+#define ENTER       13
+#define BACKSPACE   8
+#define SIZE        128
 
 static const esp_spp_mode_t esp_spp_mode = ESP_SPP_MODE_CB;
 
@@ -38,6 +52,87 @@ static long data_num = 0;
 
 static const esp_spp_sec_t sec_mask = ESP_SPP_SEC_AUTHENTICATE;
 static const esp_spp_role_t role_slave = ESP_SPP_ROLE_SLAVE;
+
+char msg[SIZE+1];
+int msgSize = 0;
+
+void delayMs(uint16_t ms)
+{
+    vTaskDelay(ms / portTICK_PERIOD_MS);
+}
+
+void uartInit(uart_port_t uart_num, uint32_t baudrate, uint8_t size, uint8_t parity, uint8_t stop, uint8_t txPin, uint8_t rxPin)
+{
+    /* Configure parameters of an UART driver,
+     * communication pins and install the driver */
+    uart_config_t uart_config = {
+        .baud_rate = (int) baudrate,
+        .data_bits = (uart_word_length_t)(size-5),
+        .parity    = (uart_parity_t)parity,
+        .stop_bits = (uart_stop_bits_t)stop,
+        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
+        .source_clk = UART_SCLK_APB,
+    };
+    ESP_ERROR_CHECK(uart_driver_install(uart_num, READ_BUF_SIZE, READ_BUF_SIZE, 0, NULL, 0));
+    ESP_ERROR_CHECK(uart_param_config(uart_num, &uart_config));
+    ESP_ERROR_CHECK(uart_set_pin(uart_num, txPin, rxPin,UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
+
+}
+
+bool uartKbhit(uart_port_t uart_num)
+{
+    uint8_t length;
+    uart_get_buffered_data_len(uart_num, (size_t*)&length);
+    return (length > 0);
+}
+
+void uartPutchar(uart_port_t com, char c)
+{
+    uart_write_bytes(com, &c, sizeof(c));
+}
+
+char uartGetchar(uart_port_t com)
+{
+    char c;
+    // Wait for a received byte
+    while(!uartKbhit(com))
+    {
+        delayMs(10);
+    }
+    // read byte, no wait
+    uart_read_bytes(com, &c, sizeof(c), 0);
+
+    return c;
+}
+
+void uartGets(uart_port_t com, char *str)
+{
+    char c=0;
+    uint8_t count = 0;
+    
+    while (c != ENTER)
+    {
+        c = uartGetchar(com);
+        if (c == '\r')
+            *str++ = 0;
+        if (c == BACKSPACE && count>0)
+        {
+            count--;
+            uartPutchar(com,BACKSPACE);
+            uartPutchar(com,' ');
+            uartPutchar(com,BACKSPACE);
+            *str-- = 0;
+        }
+        else if (c != BACKSPACE && count<SIZE)
+        {
+            count++;
+            uartPutchar(com,c);
+            *str++ = c;
+        }
+    }
+    msgSize = count-1;
+    str[count]= 0;
+}
 
 static char *bda2str(uint8_t *bda, char *str, size_t size)
 {
@@ -66,7 +161,7 @@ static void print_speed(void)
 static void esp_spp_cb(esp_spp_cb_event_t event, esp_spp_cb_param_t *param)
 {
     char bda_str[18] = {0};
-
+    
     switch (event) {
     case ESP_SPP_INIT_EVT:
         if (param->init.status == ESP_SPP_SUCCESS) {
@@ -107,11 +202,22 @@ static void esp_spp_cb(esp_spp_cb_event_t event, esp_spp_cb_param_t *param)
          * rather than in this callback directly. Since the printing takes too much time, it may stuck the Bluetooth
          * stack and also have a effect on the throughput!
          */
-        ESP_LOGI(SPP_TAG, "ESP_SPP_DATA_IND_EVT len:%d handle:%d",
-                 param->data_ind.len, param->data_ind.handle);
-        if (param->data_ind.len < 128) {
-            esp_log_buffer_hex("", param->data_ind.data, param->data_ind.len);
+        if (param->data_ind.len < 128 && *param->data_ind.data != 0)
+        {
+            if (msgSize == 0)
+            {
+                ESP_LOGI(SPP_TAG, "ESP_SPP_DATA_IND_EVT len:%d handle:%d",
+                param->data_ind.len, param->data_ind.handle);
+                esp_log_buffer_hex("Dato recibido: ", param->data_ind.data, param->data_ind.len);
+            }
+            else
+            {
+                esp_log_buffer_hex("Dato enviado: ", param->data_ind.data, (uint16_t)msgSize);
+                msgSize = 0;
+            }
         }
+        esp_spp_write(param->write.handle,1,(uint8_t *)"\0");
+        
 #else
         gettimeofday(&time_new, NULL);
         data_num += param->data_ind.len;
@@ -122,13 +228,23 @@ static void esp_spp_cb(esp_spp_cb_event_t event, esp_spp_cb_param_t *param)
         break;
     case ESP_SPP_CONG_EVT:
         ESP_LOGI(SPP_TAG, "ESP_SPP_CONG_EVT");
+        
         break;
     case ESP_SPP_WRITE_EVT:
-        ESP_LOGI(SPP_TAG, "ESP_SPP_WRITE_EVT");
+        //ESP_LOGI(SPP_TAG, "ESP_SPP_WRITE_EVT");
+        if(uartKbhit(PC_UART_PORT)){
+            uartGets(PC_UART_PORT,&msg);
+            if(msgSize > 0)
+            {
+                ESP_LOGI(SPP_TAG, "ESP_SPP_WRITE_EVT");
+                esp_spp_write(param->write.handle,msgSize,(uint8_t *)msg);
+            }
+        }
         break;
     case ESP_SPP_SRV_OPEN_EVT:
         ESP_LOGI(SPP_TAG, "ESP_SPP_SRV_OPEN_EVT status:%d handle:%d, rem_bda:[%s]", param->srv_open.status,
                  param->srv_open.handle, bda2str(param->srv_open.rem_bda, bda_str, sizeof(bda_str)));
+        esp_spp_write(param->write.handle,1,(uint8_t *)"\0");
         gettimeofday(&time_old, NULL);
         break;
     case ESP_SPP_SRV_STOP_EVT:
@@ -139,7 +255,7 @@ static void esp_spp_cb(esp_spp_cb_event_t event, esp_spp_cb_param_t *param)
         break;
     default:
         break;
-    }
+    }   
 }
 
 void esp_bt_gap_cb(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *param)
@@ -204,6 +320,9 @@ void app_main(void)
 {
     char bda_str[18] = {0};
     esp_err_t ret = nvs_flash_init();
+
+    uartInit(0,UARTS_BAUD_RATE,8,0,1,PC_UART_TX_PIN,PC_UART_RX_PIN);
+
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_ERROR_CHECK(nvs_flash_erase());
         ret = nvs_flash_init();
@@ -247,6 +366,7 @@ void app_main(void)
         ESP_LOGE(SPP_TAG, "%s spp init failed: %s\n", __func__, esp_err_to_name(ret));
         return;
     }
+    
 
 #if (CONFIG_BT_SSP_ENABLED == true)
     /* Set default parameters for Secure Simple Pairing */
@@ -254,7 +374,6 @@ void app_main(void)
     esp_bt_io_cap_t iocap = ESP_BT_IO_CAP_IO;
     esp_bt_gap_set_security_param(param_type, &iocap, sizeof(uint8_t));
 #endif
-
     /*
      * Set default parameters for Legacy Pairing
      * Use variable pin, input pin code when pairing
